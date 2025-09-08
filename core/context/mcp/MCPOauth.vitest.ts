@@ -21,7 +21,8 @@ vi.mock("./MCPManagerSingleton", () => ({
 describe("MCPOauth", () => {
   let globalContextFilePath: string;
   let mockIde: any;
-  let mockMcpServer: any;
+  let mockSseMcpServer: any;
+  let mockStreamableHttpMcpServer: any;
 
   beforeEach(() => {
     // file is present in the core/test directory
@@ -35,11 +36,19 @@ describe("MCPOauth", () => {
       showToast: vi.fn(),
     };
 
-    mockMcpServer = {
-      id: "test-server",
+    mockSseMcpServer = {
+      id: "test-sse-server",
       transport: {
         type: "sse",
-        url: "https://test-server.com",
+        url: "https://test-sse-server.com",
+      },
+    };
+
+    mockStreamableHttpMcpServer = {
+      id: "test-streamable-server",
+      transport: {
+        type: "streamable-http",
+        url: "https://test-streamable-server.com",
       },
     };
 
@@ -101,17 +110,33 @@ describe("MCPOauth", () => {
   });
 
   describe("performAuth", () => {
-    test("should call auth with correct parameters and return auth result", async () => {
+    test("should call auth with correct parameters for SSE transport", async () => {
       const { auth } = await import("@modelcontextprotocol/sdk/client/auth.js");
       const mockAuth = vi.mocked(auth);
       mockAuth.mockResolvedValue("AUTHORIZED");
 
-      const result = await performAuth(mockMcpServer, mockIde);
+      const result = await performAuth(mockSseMcpServer, mockIde);
 
       expect(mockAuth).toHaveBeenCalledWith(
         expect.any(Object), // MCPConnectionOauthProvider instance
         {
-          serverUrl: "https://test-server.com",
+          serverUrl: "https://test-sse-server.com",
+        },
+      );
+      expect(result).toBe("AUTHORIZED");
+    });
+
+    test("should call auth with correct parameters for Streamable HTTP transport", async () => {
+      const { auth } = await import("@modelcontextprotocol/sdk/client/auth.js");
+      const mockAuth = vi.mocked(auth);
+      mockAuth.mockResolvedValue("AUTHORIZED");
+
+      const result = await performAuth(mockStreamableHttpMcpServer, mockIde);
+
+      expect(mockAuth).toHaveBeenCalledWith(
+        expect.any(Object), // MCPConnectionOauthProvider instance
+        {
+          serverUrl: "https://test-streamable-server.com",
         },
       );
       expect(result).toBe("AUTHORIZED");
@@ -119,10 +144,10 @@ describe("MCPOauth", () => {
   });
 
   describe("removeMCPAuth", () => {
-    test("should clear oauth storage for the server", () => {
+    test("should clear oauth storage for SSE server", () => {
       const globalContext = new GlobalContext();
       globalContext.update("mcpOauthStorage", {
-        "https://test-server.com": {
+        "https://test-sse-server.com": {
           tokens: {
             access_token: "test-access-token",
             token_type: "Bearer",
@@ -141,7 +166,7 @@ describe("MCPOauth", () => {
         },
       });
 
-      removeMCPAuth(mockMcpServer, mockIde);
+      removeMCPAuth(mockSseMcpServer, mockIde);
 
       const updatedStorage = globalContext.get("mcpOauthStorage");
       expect(updatedStorage).toEqual({
@@ -154,7 +179,42 @@ describe("MCPOauth", () => {
       });
     });
 
-    test("should handle non-existent server gracefully", () => {
+    test("should clear oauth storage for Streamable HTTP server", () => {
+      const globalContext = new GlobalContext();
+      globalContext.update("mcpOauthStorage", {
+        "https://test-streamable-server.com": {
+          tokens: {
+            access_token: "test-access-token",
+            token_type: "Bearer",
+          },
+          clientInformation: {
+            client_id: "test-client-id",
+            redirect_uris: ["http://localhost:3000"],
+          },
+          codeVerifier: "test-code-verifier",
+        },
+        "https://other-server.com": {
+          tokens: {
+            access_token: "other-access-token",
+            token_type: "Bearer",
+          },
+        },
+      });
+
+      removeMCPAuth(mockStreamableHttpMcpServer, mockIde);
+
+      const updatedStorage = globalContext.get("mcpOauthStorage");
+      expect(updatedStorage).toEqual({
+        "https://other-server.com": {
+          tokens: {
+            access_token: "other-access-token",
+            token_type: "Bearer",
+          },
+        },
+      });
+    });
+
+    test("should handle non-existent SSE server gracefully", () => {
       const globalContext = new GlobalContext();
       globalContext.update("mcpOauthStorage", {
         "https://other-server.com": {
@@ -165,7 +225,31 @@ describe("MCPOauth", () => {
         },
       });
 
-      removeMCPAuth(mockMcpServer, mockIde);
+      removeMCPAuth(mockSseMcpServer, mockIde);
+
+      const updatedStorage = globalContext.get("mcpOauthStorage");
+      expect(updatedStorage).toEqual({
+        "https://other-server.com": {
+          tokens: {
+            access_token: "other-access-token",
+            token_type: "Bearer",
+          },
+        },
+      });
+    });
+
+    test("should handle non-existent Streamable HTTP server gracefully", () => {
+      const globalContext = new GlobalContext();
+      globalContext.update("mcpOauthStorage", {
+        "https://other-server.com": {
+          tokens: {
+            access_token: "other-access-token",
+            token_type: "Bearer",
+          },
+        },
+      });
+
+      removeMCPAuth(mockStreamableHttpMcpServer, mockIde);
 
       const updatedStorage = globalContext.get("mcpOauthStorage");
       expect(updatedStorage).toEqual({

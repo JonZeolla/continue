@@ -35,16 +35,91 @@ const WINDOWS_BATCH_COMMANDS = [
 ];
 
 function is401Error(error: unknown) {
-  return (
-    (error instanceof SseError && error.code === 401) ||
-    (error instanceof Error && error.message.includes("401")) ||
-    (error instanceof Error && error.message.includes("Unauthorized"))
-  );
+  // SSE transport uses SseError with a code property
+  if (error instanceof SseError && error.code === 401) {
+    return true;
+  }
+  
+  // Streamable HTTP and other transports: check for 401 in error message
+  // Using word boundary to match "401" but not "4015" or "3401"
+  if (error instanceof Error) {
+    return /\b401\b/.test(error.message);
+  }
+  
+  return false;
 }
 
 export type MCPExtras = {
   ide: IDE;
 };
+
+// Strategy pattern for transport-specific OAuth setup
+interface OAuthStrategy {
+  supportsOAuth(): boolean;
+  setupOAuth(transport: any, ide: IDE): Promise<{
+    accessToken?: string;
+    headers?: Record<string, string>;
+  }>;
+}
+
+class SSEOAuthStrategy implements OAuthStrategy {
+  supportsOAuth(): boolean {
+    return true;
+  }
+
+  async setupOAuth(transport: any, ide: IDE) {
+    const accessToken = await getOauthToken(transport.url, ide);
+    if (accessToken) {
+      return {
+        accessToken,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      };
+    }
+    return {};
+  }
+}
+
+class StreamableHTTPOAuthStrategy implements OAuthStrategy {
+  supportsOAuth(): boolean {
+    return true;
+  }
+
+  async setupOAuth(transport: any, ide: IDE) {
+    const accessToken = await getOauthToken(transport.url, ide);
+    if (accessToken) {
+      return {
+        accessToken,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      };
+    }
+    return {};
+  }
+}
+
+class NoOAuthStrategy implements OAuthStrategy {
+  supportsOAuth(): boolean {
+    return false;
+  }
+
+  async setupOAuth() {
+    return {};
+  }
+}
+
+function getOAuthStrategy(transportType: string): OAuthStrategy {
+  switch (transportType) {
+    case "sse":
+      return new SSEOAuthStrategy();
+    case "streamable-http":
+      return new StreamableHTTPOAuthStrategy();
+    default:
+      return new NoOAuthStrategy();
+  }
+}
 
 class MCPConnection {
   public client: Client;
@@ -127,23 +202,41 @@ class MCPConnection {
     this.abortController.abort();
     this.abortController = new AbortController();
 
-    // currently support oauth for sse transports only
-    if (this.options.transport.type === "sse") {
-      if (!this.options.transport.requestOptions) {
-        this.options.transport.requestOptions = {
-          headers: {},
-        };
+    // Use strategy pattern for transport-specific OAuth setup
+    const oauthStrategy = getOAuthStrategy(this.options.transport.type);
+    
+    if (oauthStrategy.supportsOAuth()) {
+      // Ensure we have IDE instance for OAuth
+      if (!this.extras?.ide) {
+        const errorMessage = `IDE instance required for OAuth authentication with ${this.options.transport.type} transport`;
+        this.status = "error";
+        this.errors.push(errorMessage);
+        throw new Error(errorMessage);
       }
-      const accessToken = await getOauthToken(
-        this.options.transport.url,
-        this.extras?.ide!,
-      );
-      if (accessToken) {
-        this.isProtectedResource = true;
-        this.options.transport.requestOptions.headers = {
-          ...this.options.transport.requestOptions.headers,
-          Authorization: `Bearer ${accessToken}`,
-        };
+      
+      // Setup request options if not present
+      if (
+        this.options.transport.type === "sse" ||
+        this.options.transport.type === "streamable-http"
+      ) {
+        if (!this.options.transport.requestOptions) {
+          this.options.transport.requestOptions = {
+            headers: {},
+          };
+        }
+        
+        const authResult = await oauthStrategy.setupOAuth(
+          this.options.transport,
+          this.extras.ide,
+        );
+        
+        if (authResult.accessToken) {
+          this.isProtectedResource = true;
+          this.options.transport.requestOptions.headers = {
+            ...this.options.transport.requestOptions.headers,
+            ...authResult.headers,
+          };
+        }
       }
     }
 
